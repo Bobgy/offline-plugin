@@ -2,6 +2,9 @@ if (typeof DEBUG === 'undefined') {
   var DEBUG = false;
 }
 
+const idbKeyval = require('idb-keyval');
+const idbStore = new idbKeyval.Store('offline-plugin-db', 'offline-plugin-store');
+
 function WebpackServiceWorker(params, helpers) {
   const cacheMaps = helpers.cacheMaps;
   // navigationPreload: true, { map: (URL) => URL, test: (URL) => boolean }
@@ -11,11 +14,6 @@ function WebpackServiceWorker(params, helpers) {
   const strategy = params.strategy;
   // responseStrategy: cache-first, network-first
   const responseStrategy = params.responseStrategy;
-
-  const assets = params.assets;
-
-  let hashesMap = params.hashesMap;
-  let externals = params.externals;
 
   const prefetchRequest = params.prefetchRequest || {
     credentials: 'same-origin',
@@ -29,9 +27,45 @@ function WebpackServiceWorker(params, helpers) {
   const PRELOAD_CACHE_NAME = CACHE_PREFIX + '$preload';
   const STORED_DATA_KEY = '__offline_webpack__data';
 
-  mapAssets();
+  function getPublicPath() {
+    return idbKeyval.get('publicPath', idbStore)
+      .catch(err => {
+        console.error('[SW] exception getting publicPath in indexedDB: ', err);
 
-  const allAssets = [].concat(assets.main, assets.additional, assets.optional);
+        return null;
+      });
+  }
+
+  function getMetadata() {
+    return getPublicPath().then(publicPath => {
+      return mapAssets({
+        assets: params.assets,
+        hashesMap: params.hashesMap,
+        externals: params.externals,
+        publicPath,
+      });
+    });
+  }
+
+  function calcAllAssets(assets) {
+    return [].concat(assets.main, assets.additional, assets.optional);
+  }
+
+  let assets, hashesMap, externals, allAssets;
+
+  function init() {
+    return getMetadata()
+      .then(({
+        assets: finalAssets,
+        hashesMap: finalHashesMap,
+        externals: finalExternals
+      }) => {
+        assets = finalAssets;
+        hashesMap = finalHashesMap;
+        externals = finalExternals;
+        allAssets = calcAllAssets(assets);
+      });
+  }
 
   self.addEventListener('install', (event) => {
     console.log('[SW]:', 'Install event');
@@ -39,9 +73,9 @@ function WebpackServiceWorker(params, helpers) {
     let installing;
 
     if (strategy === 'changed') {
-      installing = cacheChanged('main');
+      installing = init().then(() => cacheChanged('main'));
     } else {
-      installing = cacheAssets('main');
+      installing = init().then(() => cacheAssets('main'));
     }
 
     event.waitUntil(installing);
@@ -551,10 +585,23 @@ function WebpackServiceWorker(params, helpers) {
     });
   }
 
-  function mapAssets() {
-    Object.keys(assets).forEach((key) => {
-      assets[key] = assets[key].map((path) => {
-        const url = new URL(path, location);
+  function pathToURL(path, publicPath) {
+    if (publicPath) {
+      return new URL(publicPath + path, location);
+    } else {
+      return new URL(path, location);
+    }
+  }
+
+  function mapAssets({
+    assets,
+    hashesMap,
+    externals,
+    publicPath,
+  }) {
+    const finalAssets = Object.entries(assets).reduce((result, [key, asset]) => {
+      result[key] = asset.map((path) => {
+        const url = pathToURL(path, publicPath);
 
         url.hash = '';
 
@@ -564,10 +611,12 @@ function WebpackServiceWorker(params, helpers) {
 
         return url.toString();
       });
-    });
 
-    hashesMap = Object.keys(hashesMap).reduce((result, hash) => {
-      const url = new URL(hashesMap[hash], location);
+      return result;
+    }, {});
+
+    const finalHashesMap = Object.entries(hashesMap).reduce((result, [hash, path]) => {
+      const url = pathToURL(path, publicPath);
       url.search = '';
       url.hash = '';
 
@@ -575,12 +624,18 @@ function WebpackServiceWorker(params, helpers) {
       return result;
     }, {});
 
-    externals = externals.map((path) => {
-      const url = new URL(path, location);
+    const finalExternals = externals.map((path) => {
+      const url = pathToURL(path, publicPath);
       url.hash = '';
 
       return url.toString();
     });
+
+    return {
+      assets: finalAssets,
+      hashesMap: finalHashesMap,
+      externals: finalExternals,
+    };
   }
 
   function addAllNormalized(cache, requests, options) {
