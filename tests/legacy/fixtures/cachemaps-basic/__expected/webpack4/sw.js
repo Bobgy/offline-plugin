@@ -148,9 +148,14 @@ var __wpo = {
 })();;
         'use strict';
 
+var _slicedToArray = (function () { function sliceIterator(arr, i) { var _arr = []; var _n = true; var _d = false; var _e = undefined; try { for (var _i = arr[Symbol.iterator](), _s; !(_n = (_s = _i.next()).done); _n = true) { _arr.push(_s.value); if (i && _arr.length === i) break; } } catch (err) { _d = true; _e = err; } finally { try { if (!_n && _i['return']) _i['return'](); } finally { if (_d) throw _e; } } return _arr; } return function (arr, i) { if (Array.isArray(arr)) { return arr; } else if (Symbol.iterator in Object(arr)) { return sliceIterator(arr, i); } else { throw new TypeError('Invalid attempt to destructure non-iterable instance'); } }; })();
+
 if (typeof DEBUG === 'undefined') {
   var DEBUG = false;
 }
+
+var idbKeyval = __webpack_require__(1);
+var idbStore = new idbKeyval.Store('offline-plugin-db', 'offline-plugin-store');
 
 function WebpackServiceWorker(params, helpers) {
   var cacheMaps = helpers.cacheMaps;
@@ -161,11 +166,6 @@ function WebpackServiceWorker(params, helpers) {
   var strategy = params.strategy;
   // responseStrategy: cache-first, network-first
   var responseStrategy = params.responseStrategy;
-
-  var assets = params.assets;
-
-  var hashesMap = params.hashesMap;
-  var externals = params.externals;
 
   var prefetchRequest = params.prefetchRequest || {
     credentials: 'same-origin',
@@ -179,9 +179,46 @@ function WebpackServiceWorker(params, helpers) {
   var PRELOAD_CACHE_NAME = CACHE_PREFIX + '$preload';
   var STORED_DATA_KEY = '__offline_webpack__data';
 
-  mapAssets();
+  function getPublicPath() {
+    return idbKeyval.get('publicPath', idbStore)['catch'](function (err) {
+      console.error('[SW] exception getting publicPath in indexedDB: ', err);
 
-  var allAssets = [].concat(assets.main, assets.additional, assets.optional);
+      return null;
+    });
+  }
+
+  function getMetadata() {
+    return getPublicPath().then(function (publicPath) {
+      return mapAssets({
+        assets: params.assets,
+        hashesMap: params.hashesMap,
+        externals: params.externals,
+        publicPath: publicPath
+      });
+    });
+  }
+
+  function calcAllAssets(assets) {
+    return [].concat(assets.main, assets.additional, assets.optional);
+  }
+
+  var assets = undefined,
+      hashesMap = undefined,
+      externals = undefined,
+      allAssets = undefined;
+
+  function init() {
+    return getMetadata().then(function (_ref) {
+      var finalAssets = _ref.assets;
+      var finalHashesMap = _ref.hashesMap;
+      var finalExternals = _ref.externals;
+
+      assets = finalAssets;
+      hashesMap = finalHashesMap;
+      externals = finalExternals;
+      allAssets = calcAllAssets(assets);
+    });
+  }
 
   self.addEventListener('install', function (event) {
     console.log('[SW]:', 'Install event');
@@ -189,9 +226,13 @@ function WebpackServiceWorker(params, helpers) {
     var installing = undefined;
 
     if (strategy === 'changed') {
-      installing = cacheChanged('main');
+      installing = init().then(function () {
+        return cacheChanged('main');
+      });
     } else {
-      installing = cacheAssets('main');
+      installing = init().then(function () {
+        return cacheAssets('main');
+      });
     }
 
     event.waitUntil(installing);
@@ -676,10 +717,28 @@ function WebpackServiceWorker(params, helpers) {
     });
   }
 
-  function mapAssets() {
-    Object.keys(assets).forEach(function (key) {
-      assets[key] = assets[key].map(function (path) {
-        var url = new URL(path, location);
+  function pathToURL(path, publicPath) {
+    if (publicPath) {
+      return new URL(publicPath + path, location);
+    } else {
+      return new URL(path, location);
+    }
+  }
+
+  function mapAssets(_ref2) {
+    var assets = _ref2.assets;
+    var hashesMap = _ref2.hashesMap;
+    var externals = _ref2.externals;
+    var publicPath = _ref2.publicPath;
+
+    var finalAssets = Object.entries(assets).reduce(function (result, _ref3) {
+      var _ref32 = _slicedToArray(_ref3, 2);
+
+      var key = _ref32[0];
+      var asset = _ref32[1];
+
+      result[key] = asset.map(function (path) {
+        var url = pathToURL(path, publicPath);
 
         url.hash = '';
 
@@ -689,10 +748,17 @@ function WebpackServiceWorker(params, helpers) {
 
         return url.toString();
       });
-    });
 
-    hashesMap = Object.keys(hashesMap).reduce(function (result, hash) {
-      var url = new URL(hashesMap[hash], location);
+      return result;
+    }, {});
+
+    var finalHashesMap = Object.entries(hashesMap).reduce(function (result, _ref4) {
+      var _ref42 = _slicedToArray(_ref4, 2);
+
+      var hash = _ref42[0];
+      var path = _ref42[1];
+
+      var url = pathToURL(path, publicPath);
       url.search = '';
       url.hash = '';
 
@@ -700,12 +766,18 @@ function WebpackServiceWorker(params, helpers) {
       return result;
     }, {});
 
-    externals = externals.map(function (path) {
-      var url = new URL(path, location);
+    var finalExternals = externals.map(function (path) {
+      var url = pathToURL(path, publicPath);
       url.hash = '';
 
       return url.toString();
     });
+
+    return {
+      assets: finalAssets,
+      hashesMap: finalHashesMap,
+      externals: finalExternals
+    };
   }
 
   function addAllNormalized(cache, requests, options) {
@@ -753,8 +825,8 @@ function WebpackServiceWorker(params, helpers) {
       }
 
       return deleting.then(function () {
-        var addAll = responses.map(function (_ref, i) {
-          var response = _ref.response;
+        var addAll = responses.map(function (_ref5, i) {
+          var response = _ref5.response;
 
           return cache.put(requests[i], response);
         });
@@ -910,11 +982,89 @@ cacheMaps: [
     ],
 navigationPreload: false,
 });
-        module.exports = __webpack_require__(1)
+        module.exports = __webpack_require__(2)
       
 
 /***/ }),
 /* 1 */
+/***/ (function(__webpack_module__, __webpack_exports__, __webpack_require__) {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "Store", function() { return Store; });
+/* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "get", function() { return get; });
+/* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "set", function() { return set; });
+/* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "del", function() { return del; });
+/* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "clear", function() { return clear; });
+/* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "keys", function() { return keys; });
+class Store {
+    constructor(dbName = 'keyval-store', storeName = 'keyval') {
+        this.storeName = storeName;
+        this._dbp = new Promise((resolve, reject) => {
+            const openreq = indexedDB.open(dbName, 1);
+            openreq.onerror = () => reject(openreq.error);
+            openreq.onsuccess = () => resolve(openreq.result);
+            // First time setup: create an empty object store
+            openreq.onupgradeneeded = () => {
+                openreq.result.createObjectStore(storeName);
+            };
+        });
+    }
+    _withIDBStore(type, callback) {
+        return this._dbp.then(db => new Promise((resolve, reject) => {
+            const transaction = db.transaction(this.storeName, type);
+            transaction.oncomplete = () => resolve();
+            transaction.onabort = transaction.onerror = () => reject(transaction.error);
+            callback(transaction.objectStore(this.storeName));
+        }));
+    }
+}
+let store;
+function getDefaultStore() {
+    if (!store)
+        store = new Store();
+    return store;
+}
+function get(key, store = getDefaultStore()) {
+    let req;
+    return store._withIDBStore('readonly', store => {
+        req = store.get(key);
+    }).then(() => req.result);
+}
+function set(key, value, store = getDefaultStore()) {
+    return store._withIDBStore('readwrite', store => {
+        store.put(value, key);
+    });
+}
+function del(key, store = getDefaultStore()) {
+    return store._withIDBStore('readwrite', store => {
+        store.delete(key);
+    });
+}
+function clear(store = getDefaultStore()) {
+    return store._withIDBStore('readwrite', store => {
+        store.clear();
+    });
+}
+function keys(store = getDefaultStore()) {
+    const keys = [];
+    return store._withIDBStore('readonly', store => {
+        // This would be store.getAllKeys(), but it isn't supported by Edge or Safari.
+        // And openKeyCursor isn't supported by Safari.
+        (store.openKeyCursor || store.openCursor).call(store).onsuccess = function () {
+            if (!this.result)
+                return;
+            keys.push(this.result.key);
+            this.result.continue();
+        };
+    }).then(() => keys);
+}
+
+
+
+
+/***/ }),
+/* 2 */
 /***/ (function(module, exports) {
 
 
